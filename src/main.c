@@ -16,6 +16,8 @@
 #include "lwip/sys.h"
 #include "esp_wifi_types.h"
 #include <string.h>
+#include "esp_http_server.h"
+#include "tcpip_adapter.h"
 
 #define DC_PWM_PIN 5
 #define DC_PWM_FREQ 25000
@@ -41,9 +43,15 @@ TaskHandle_t wifi_task_handle = NULL;
 // WIFI task prototype
 void wifi_task();
 
+// handle/ref to the webserver task to delete it
+TaskHandle_t webserver_task_handle = NULL;
+
+//webserver task proto
+void webserver_task();
+
 // minmax prototype
-int max(int x, int y);
-int min(int x, int y);
+int max_int(int x, int y);
+int min_int(int x, int y);
 
 //angle to mikroseconds prototype
 int angle_to_us(int deg);
@@ -78,8 +86,30 @@ void wifi_init_softap();
 // handle wifi connections proto
 static esp_err_t event_handler(void *ctx, system_event_t *event);
 
+// start the webserver proto
+httpd_handle_t start_webserver(void);
+
+// Semaphore to protect steering global variable
+SemaphoreHandle_t steeringSemaphore = NULL;
+
+// Steering angle global variabled
+int steering_angle_global = 0;
+
+// Semaphore to protect throttle global variable
+SemaphoreHandle_t throttleSemaphore = NULL;
+
+//throttle global variable
+int throttle_global = 0;
+
 void app_main(){
     printf("hi\n");
+
+    // initialize steering semaphore
+    steeringSemaphore = xSemaphoreCreateMutex();
+
+    //initialize throttle semaphore
+    throttleSemaphore = xSemaphoreCreateMutex();
+
     //create the task to blink the led
     xTaskCreate(
         &motor_control_task, //memory address
@@ -87,7 +117,7 @@ void app_main(){
         2048, //bits of the stack
         NULL, //parameter to pass (empty)
         4, //priority
-        motor_control_task_handle //handle/ref to the blink task to delete it
+        motor_control_task_handle //handle/ref to the motor control task to delete it
         );
     
     //create the task for WIFI
@@ -97,7 +127,7 @@ void app_main(){
         4096, //bits of the stack
         NULL, //parameter to pass (empty)
         5, //priority
-        wifi_task_handle //handle/ref to the blink task to delete it
+        wifi_task_handle //handle/ref to the wifi task to delete it
         );
 }
 
@@ -125,13 +155,11 @@ void motor_control_task(){
     printf("Start PWM\n");
     int i = 0;
     int servo_angle = 0;
-    int number_of_sections = 36; // 180deg/5deg
     int T_on = 0;
     double duty_cycle = 0;
     int duty_cycle_int = 0;
 
     int throttle = 0;
-    int max_percentage = 40;
     double DC_duty_cycle = 0;
     int DC_duty_cycle_int = 0;
 
@@ -139,20 +167,25 @@ void motor_control_task(){
 
         // Calculate and output Servo motor PWM
         //calculate the servo angle from triangle wave
-        servo_angle = 5 * triangle_wave(i, number_of_sections);
+        if(xSemaphoreTake(steeringSemaphore, portMAX_DELAY)){
+            servo_angle = steering_angle_global;
+            xSemaphoreGive(steeringSemaphore);
+        }
+
+        
         printf("Servo angle: %d\n", servo_angle);
 
         //calculate the T_on in microseconds
         T_on = angle_to_us(servo_angle);
-        printf("T_on: %d\n", T_on);
+        // printf("T_on: %d\n", T_on);
 
         //calculate the duty cycle
         duty_cycle = duty_cycle_from_T_on_calc(T_on, STEERING_SERVO_FREQ);
-        printf("Servo duty double: %lf\n", duty_cycle);
+        // printf("Servo duty double: %lf\n", duty_cycle);
 
         //convert double duty cycle to int duty cycle
         duty_cycle_int = duty_cycle_int_calc(duty_cycle, STEERING_DUTY_RESOLUTION);
-        printf("Servo duty int: %d\n", duty_cycle_int);
+        // printf("Servo duty int: %d\n", duty_cycle_int);
 
         //pass to pin
         set_duty(duty_cycle_int, steering_PWM_config);
@@ -160,15 +193,20 @@ void motor_control_task(){
 
         // Calculate and output DC motor PWM
         //calculate throttle from triangle wave
-        throttle = triangle_wave(i, max_percentage) + 80;
+        
+        if(xSemaphoreTake(throttleSemaphore, portMAX_DELAY)){
+            throttle = throttle_global;
+            xSemaphoreGive(throttleSemaphore);
+        }
+
         printf("Throttle: %d\n", throttle);
 
         //calculate duty cycle from throttle
         DC_duty_cycle = throttle / 100.;
-        printf("DC_duty_cycle: %lf\n", DC_duty_cycle);
+        // printf("DC_duty_cycle: %lf\n", DC_duty_cycle);
 
         DC_duty_cycle_int = duty_cycle_int_calc(DC_duty_cycle, DC_DUTY_RESOLUTION);
-        printf("DC_duty_cycle_int: %d\n", DC_duty_cycle_int);
+        // printf("DC_duty_cycle_int: %d\n", DC_duty_cycle_int);
 
         //pass to pin
         set_duty(DC_duty_cycle_int, DC_PWM_config);
@@ -179,6 +217,7 @@ void motor_control_task(){
     printf("Delete task\n");
     vTaskDelete(motor_control_task_handle);
 }
+
 
 static const char *TAG = "wifi softAP";
 
@@ -195,10 +234,152 @@ void wifi_task(){
     
     ESP_LOGI(TAG, "ESP_WIFI_MODE_AP");
     wifi_init_softap();
+    // default ip address: 192.168.4.1
 
-    while(1){
+    //create the task for webserver after initializing WIFI
+    xTaskCreate(
+        &webserver_task, //memory address
+        "webserver_task", //name of the task
+        4096, //bits of the stack
+        NULL, //parameter to pass (empty)
+        6, //priority
+        webserver_task_handle //handle/ref to the web server task to delete it
+    );
+
+    printf("WIFI setup successful\n");
+    vTaskDelete(wifi_task_handle);
+}
+
+
+//set up webserver and set up handle for http request
+void webserver_task(){
+
+    // start the webserver
+    start_webserver();
+
+     while(1){
         vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
+}
+
+
+/* Our URI handler function to be called during GET /uri request */
+esp_err_t steering_handler(httpd_req_t *req)
+{
+    
+    /* Destination buffer for content of HTTP POST request.
+     * httpd_req_recv() accepts char* only, but content could
+     * as well be any binary data (needs type casting).
+     * In case of string data, null termination will be absent, and
+     * content length would give length of string */
+    char content[2];
+
+    /* Truncate if content length larger than the buffer */
+    size_t recv_size = min_int(req->content_len, sizeof(content));
+
+    int ret = httpd_req_recv(req, content, recv_size);
+    if (ret <= 0) {  /* 0 return value indicates connection closed */
+        /* Check if timeout occurred */
+        if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+            /* In case of timeout one can choose to retry calling
+             * httpd_req_recv(), but to keep it simple, here we
+             * respond with an HTTP 408 (Request Timeout) error */
+            httpd_resp_send_408(req);
+        }
+        /* In case of error, returning ESP_FAIL will
+         * ensure that the underlying socket is closed */
+        return ESP_FAIL;
+    }
+    printf("steering get: %d\n", (int)content[0]);
+    //protect steering global variable by taking semaphore
+    if(xSemaphoreTake(steeringSemaphore, portMAX_DELAY)){
+        steering_angle_global = (int)content[0];
+        //release semaphore
+        xSemaphoreGive(steeringSemaphore);
+    }
+
+    /* Send a simple response */
+    //const char resp[] = content;
+    httpd_resp_send(req, content, strlen(content));
+    return ESP_OK;
+}
+
+
+/* URI handler structure for GET /steering */
+httpd_uri_t steering_get = {
+    .uri      = "/steering",
+    .method   = HTTP_GET,
+    .handler  = steering_handler,
+    .user_ctx = NULL
+};
+
+/* Our URI handler function to be called during GET /uri request */
+esp_err_t throttle_handler(httpd_req_t *req)
+{
+    /* Destination buffer for content of HTTP POST request.
+     * httpd_req_recv() accepts char* only, but content could
+     * as well be any binary data (needs type casting).
+     * In case of string data, null termination will be absent, and
+     * content length would give length of string */
+    char content[2];
+
+    /* Truncate if content length larger than the buffer */
+    size_t recv_size = min_int(req->content_len, sizeof(content));
+
+    int ret = httpd_req_recv(req, content, recv_size);
+    if (ret <= 0) {  /* 0 return value indicates connection closed */
+        /* Check if timeout occurred */
+        if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+            /* In case of timeout one can choose to retry calling
+             * httpd_req_recv(), but to keep it simple, here we
+             * respond with an HTTP 408 (Request Timeout) error */
+            httpd_resp_send_408(req);
+        }
+        /* In case of error, returning ESP_FAIL will
+         * ensure that the underlying socket is closed */
+        return ESP_FAIL;
+    }
+
+    printf("throttle get: %d\n", (int)content[0]);
+    //protect throttle global variable by taking semaphore
+    if(xSemaphoreTake(throttleSemaphore, portMAX_DELAY)){
+        throttle_global = (int)content[0];
+        //release semaphore
+        xSemaphoreGive(throttleSemaphore);
+    }
+
+    /* Send a simple response */
+    //const char resp[] = content;
+    httpd_resp_send(req, content, strlen(content));
+    return ESP_OK;
+}
+
+
+/* URI handler structure for GET /throttle */
+httpd_uri_t throttle_get = {
+    .uri      = "/throttle",
+    .method   = HTTP_GET,
+    .handler  = throttle_handler,
+    .user_ctx = NULL
+};
+
+/* Function for starting the webserver */
+httpd_handle_t start_webserver(void)
+{
+    /* Generate default configuration */
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+
+    /* Empty handle to esp_http_server */
+    httpd_handle_t server = NULL;
+
+    /* Start the httpd server */
+    if (httpd_start(&server, &config) == ESP_OK) {
+        /* Register URI handlers */
+        httpd_register_uri_handler(server, &steering_get);
+        httpd_register_uri_handler(server, &throttle_get);
+    }
+    /* If server failed to start, handle will be NULL */
+    return server;
 }
 
 static esp_err_t event_handler(void *ctx, system_event_t *event)
@@ -226,6 +407,9 @@ void wifi_init_softap()
     s_wifi_event_group = xEventGroupCreate();
 
     tcpip_adapter_init();
+    // uint8_t mac = 1;
+    // tcpip_adapter_ip_info_t ip_info = {}
+    // ESP_ERROR_CHECK(tcpip_adapter_ap_start(&mac, &ip_info));
     ESP_ERROR_CHECK(esp_event_loop_init(event_handler, NULL));
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -258,12 +442,12 @@ int angle_to_us(int deg){
     int m = 500 / 90;
     int b = 1500;
     int delay_time = m * deg + b;
-    delay_time = min(max(delay_time,1000), 2000);
+    delay_time = min_int(max_int(delay_time,1000), 2000);
     return delay_time;
 }
 
 
-int min(int x, int y){
+int min_int(int x, int y){
     if(x<y){
         return x;
     }else{
@@ -272,7 +456,7 @@ int min(int x, int y){
 }
 
 
-int max(int x, int y){
+int max_int(int x, int y){
     if(x>y){
         return x;
     }else{
@@ -307,7 +491,7 @@ void wait_micros(int delay_us){
     ledc_intr_type_t intr_type;     /*!< configure interrupt, Fade interrupt enable  or Fade interrupt disable */
     ledc_timer_t timer_sel;         /*!< Select the timer source of channel (0 - 3) */
     uint32_t duty;                  /*!< LEDC channel duty, the range of duty setting is [0, (2**duty_resolution)] */
-    int hpoint;                     /*!< LEDC channel hpoint value, the max value is 0xfffff */
+    int hpoint;                     /*!< LEDC channel hpoint value, the max_int value is 0xfffff */
 
 //pwm config function with pin and freq
 ledc_channel_config_t PWM_config(int pin, int freq, int timer, int channel, int duty_resolution){
