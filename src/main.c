@@ -407,9 +407,7 @@ void wifi_init_softap()
     s_wifi_event_group = xEventGroupCreate();
 
     tcpip_adapter_init();
-    // uint8_t mac = 1;
-    // tcpip_adapter_ip_info_t ip_info = {}
-    // ESP_ERROR_CHECK(tcpip_adapter_ap_start(&mac, &ip_info));
+    
     ESP_ERROR_CHECK(esp_event_loop_init(event_handler, NULL));
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -484,15 +482,6 @@ void wait_micros(int delay_us){
     }
 }
 
-
- int gpio_num;                   /*!< the LEDC output gpio_num, if you want to use gpio16, gpio_num = 16 */
-    ledc_mode_t speed_mode;         /*!< LEDC speed speed_mode, high-speed mode or low-speed mode */
-    ledc_channel_t channel;         /*!< LEDC channel (0 - 7) */
-    ledc_intr_type_t intr_type;     /*!< configure interrupt, Fade interrupt enable  or Fade interrupt disable */
-    ledc_timer_t timer_sel;         /*!< Select the timer source of channel (0 - 3) */
-    uint32_t duty;                  /*!< LEDC channel duty, the range of duty setting is [0, (2**duty_resolution)] */
-    int hpoint;                     /*!< LEDC channel hpoint value, the max_int value is 0xfffff */
-
 //pwm config function with pin and freq
 ledc_channel_config_t PWM_config(int pin, int freq, int timer, int channel, int duty_resolution){
     //at first the timer config
@@ -526,7 +515,6 @@ double duty_cycle_from_T_on_calc(int T_on, int freq){
 int duty_cycle_int_calc(double duty_cycle, int duty_resolution){
     return (int)(duty_cycle * (double)(1<<duty_resolution));
 }
-
 
 
 //pass duty cycle to pin
