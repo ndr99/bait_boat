@@ -1,11 +1,21 @@
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/event_groups.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
+#include "esp_wifi.h"
 #include "sdkconfig.h"
 #include "esp_system.h"
 #include <math.h>
+#include "nvs_flash.h"
+#include "esp_event.h"
+#include "esp_event_loop.h"
+#include "esp_log.h"
+#include "lwip/err.h"
+#include "lwip/sys.h"
+#include "esp_wifi_types.h"
+#include <string.h>
 
 #define DC_PWM_PIN 5
 #define DC_PWM_FREQ 25000
@@ -14,13 +24,22 @@
 #define STEERING_SERVO_FREQ 50
 #define STEERING_DUTY_RESOLUTION LEDC_TIMER_12_BIT
 
+// WIFI ap authentication parameters
+#define EXAMPLE_ESP_WIFI_SSID      "BAIT_BOAT"
+#define EXAMPLE_ESP_WIFI_PASS      "barmilehet"
+#define EXAMPLE_MAX_STA_CONN       1
 
+// handle/ref to the motor control task to delete it
+TaskHandle_t motor_control_task_handle = NULL;
 
-// handle/ref to the blink task to delete it
-TaskHandle_t blink_task_handle = NULL;
+// motor_control_task prototype
+void motor_control_task();
 
-// blink_task prototype
-void blink_task();
+// handle/ref to the wifi task to delete it
+TaskHandle_t wifi_task_handle = NULL;
+
+// WIFI task prototype
+void wifi_task();
 
 // minmax prototype
 int max(int x, int y);
@@ -50,23 +69,41 @@ int duty_cycle_int_calc(double duty_cycle, int duty_resolution);
 //set_duty prototype
 void set_duty(int duty_cycle, ledc_channel_config_t PWM_config_t);
 
+/* FreeRTOS event group to signal when we are connected*/
+static EventGroupHandle_t s_wifi_event_group;
+
+// init wifi proto
+void wifi_init_softap();
+
+// handle wifi connections proto
+static esp_err_t event_handler(void *ctx, system_event_t *event);
 
 void app_main(){
     printf("hi\n");
     //create the task to blink the led
     xTaskCreate(
-        &blink_task, //memory address
-        "blink_task", //name of the task
+        &motor_control_task, //memory address
+        "motor_control_task", //name of the task
         2048, //bits of the stack
         NULL, //parameter to pass (empty)
         4, //priority
-        blink_task_handle //handle/ref to the blink task to delete it
+        motor_control_task_handle //handle/ref to the blink task to delete it
+        );
+    
+    //create the task for WIFI
+     xTaskCreate(
+        &wifi_task, //memory address
+        "wifi_task", //name of the task
+        4096, //bits of the stack
+        NULL, //parameter to pass (empty)
+        5, //priority
+        wifi_task_handle //handle/ref to the blink task to delete it
         );
 }
 
 
 //blink the led 30times
-void blink_task(){
+void motor_control_task(){
 
     //set up the steering servo
     ledc_channel_config_t steering_PWM_config = PWM_config(
@@ -140,7 +177,78 @@ void blink_task(){
         i++;
     }
     printf("Delete task\n");
-    vTaskDelete(blink_task_handle);
+    vTaskDelete(motor_control_task_handle);
+}
+
+static const char *TAG = "wifi softAP";
+
+//configure wifi as access point and communicate through http request
+void wifi_task(){
+
+    //Initialize NVS
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+      ESP_ERROR_CHECK(nvs_flash_erase());
+      ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+    
+    ESP_LOGI(TAG, "ESP_WIFI_MODE_AP");
+    wifi_init_softap();
+
+    while(1){
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+    }
+}
+
+static esp_err_t event_handler(void *ctx, system_event_t *event)
+{
+    switch(event->event_id) {
+    case SYSTEM_EVENT_AP_STACONNECTED:
+        ESP_LOGI(TAG, "station:"MACSTR" join, AID=%d",
+                 MAC2STR(event->event_info.sta_connected.mac),
+                 event->event_info.sta_connected.aid);
+        break;
+    case SYSTEM_EVENT_AP_STADISCONNECTED:
+        ESP_LOGI(TAG, "station:"MACSTR"leave, AID=%d",
+                 MAC2STR(event->event_info.sta_disconnected.mac),
+                 event->event_info.sta_disconnected.aid);
+        break;
+    default:
+        break;
+    }
+    return ESP_OK;
+}
+
+
+void wifi_init_softap()
+{
+    s_wifi_event_group = xEventGroupCreate();
+
+    tcpip_adapter_init();
+    ESP_ERROR_CHECK(esp_event_loop_init(event_handler, NULL));
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    wifi_config_t wifi_config = {
+        .ap = {
+            .ssid = EXAMPLE_ESP_WIFI_SSID,
+            .ssid_len = strlen(EXAMPLE_ESP_WIFI_SSID),
+            .password = EXAMPLE_ESP_WIFI_PASS,
+            .max_connection = EXAMPLE_MAX_STA_CONN,
+            .authmode = WIFI_AUTH_WPA_WPA2_PSK
+        },
+    };
+    if (strlen(EXAMPLE_ESP_WIFI_PASS) == 0) {
+        wifi_config.ap.authmode = WIFI_AUTH_OPEN;
+    }
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_AP, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    ESP_LOGI(TAG, "wifi_init_softap finished.SSID:%s password:%s",
+             EXAMPLE_ESP_WIFI_SSID, EXAMPLE_ESP_WIFI_PASS);
 }
 
 
