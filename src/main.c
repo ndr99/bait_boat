@@ -263,7 +263,7 @@ void webserver_task(){
 }
 
 
-/* Our URI handler function to be called during GET /uri request */
+/* Our URI handler function to be called during POST /steering request */
 esp_err_t steering_handler(httpd_req_t *req)
 {
     
@@ -290,7 +290,7 @@ esp_err_t steering_handler(httpd_req_t *req)
          * ensure that the underlying socket is closed */
         return ESP_FAIL;
     }
-    printf("steering get: %d\n", (int)content[0]);
+    printf("steering post: %d\n", (int)content[0]);
     //protect steering global variable by taking semaphore
     if(xSemaphoreTake(steeringSemaphore, portMAX_DELAY)){
         steering_angle_global = (int)content[0];
@@ -305,15 +305,15 @@ esp_err_t steering_handler(httpd_req_t *req)
 }
 
 
-/* URI handler structure for GET /steering */
-httpd_uri_t steering_get = {
+/* URI handler structure for POST /steering */
+httpd_uri_t steering_post = {
     .uri      = "/steering",
-    .method   = HTTP_GET,
+    .method   = HTTP_POST,
     .handler  = steering_handler,
     .user_ctx = NULL
 };
 
-/* Our URI handler function to be called during GET /uri request */
+/* Our URI handler function to be called during POST /throttle request */
 esp_err_t throttle_handler(httpd_req_t *req)
 {
     /* Destination buffer for content of HTTP POST request.
@@ -340,7 +340,7 @@ esp_err_t throttle_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    printf("throttle get: %d\n", (int)content[0]);
+    printf("throttle post: %d\n", (int)content[0]);
     //protect throttle global variable by taking semaphore
     if(xSemaphoreTake(throttleSemaphore, portMAX_DELAY)){
         throttle_global = (int)content[0];
@@ -355,10 +355,10 @@ esp_err_t throttle_handler(httpd_req_t *req)
 }
 
 
-/* URI handler structure for GET /throttle */
-httpd_uri_t throttle_get = {
+/* URI handler structure for POST /throttle */
+httpd_uri_t throttle_post = {
     .uri      = "/throttle",
-    .method   = HTTP_GET,
+    .method   = HTTP_POST,
     .handler  = throttle_handler,
     .user_ctx = NULL
 };
@@ -375,8 +375,8 @@ httpd_handle_t start_webserver(void)
     /* Start the httpd server */
     if (httpd_start(&server, &config) == ESP_OK) {
         /* Register URI handlers */
-        httpd_register_uri_handler(server, &steering_get);
-        httpd_register_uri_handler(server, &throttle_get);
+        httpd_register_uri_handler(server, &steering_post);
+        httpd_register_uri_handler(server, &throttle_post);
     }
     /* If server failed to start, handle will be NULL */
     return server;
