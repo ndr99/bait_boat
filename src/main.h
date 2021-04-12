@@ -18,6 +18,7 @@
 #include "esp_netif.h"
 #include "servo_control.h"
 #include "helper.h"
+#include <stdbool.h>
 
 #define DC_PWM_PIN 5
 #define DC_PWM_FREQ 25000
@@ -25,6 +26,9 @@
 #define STEERING_SERVO_PIN 4
 #define STEERING_SERVO_FREQ 50
 #define STEERING_DUTY_RESOLUTION LEDC_TIMER_12_BIT
+#define DROP_SERVO_PIN 33
+#define DROP_SERVO_FREQ STEERING_SERVO_FREQ
+#define DROP_DUTY_RESOLUTION STEERING_DUTY_RESOLUTION
 
 // WIFI ap authentication parameters
 #define EXAMPLE_ESP_WIFI_SSID      "BAIT_BOAT"

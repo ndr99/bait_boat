@@ -15,3 +15,13 @@ int duty_cycle_int_calc(double duty_cycle, int duty_resolution);
 
 //set_duty prototype
 void set_duty(int duty_cycle, ledc_channel_config_t PWM_config_t);
+
+//servo_to_angle prototype, this function moves the servo to the given angle
+void servo_to_angle(int servo_angle,
+                   int motor_servo_T_ON_min,
+                   int motor_servo_T_ON_max,
+                   int motor_servo_phi_min,
+                   int motor_servo_phi_max,
+                   int servo_freq,
+                   int servo_duty_resolution,
+                   ledc_channel_config_t PWM_config);

@@ -13,6 +13,12 @@ SemaphoreHandle_t throttleSemaphore = NULL;
 //throttle global variable
 int throttle_global = 0;
 
+// Semaphore to protect drop global variable
+SemaphoreHandle_t dropSemaphore = NULL;
+
+// Steering angle global variabled
+bool drop_global = 0;
+
 void app_main(){ 
     printf("hi\n");
 
@@ -21,6 +27,9 @@ void app_main(){
 
     //initialize throttle semaphore
     throttleSemaphore = xSemaphoreCreateMutex();
+
+    //initialize drop semaphore
+    dropSemaphore = xSemaphoreCreateMutex();
 
     //create the task to blink the led
     xTaskCreate(
@@ -49,7 +58,7 @@ void app_main(){
 void motor_control_task(){
 
     //set up the steering servo
-    ledc_channel_config_t steering_PWM_config = PWM_config(
+    ledc_channel_config_t steering_PWM_channel_config = PWM_config(
         STEERING_SERVO_PIN,
         STEERING_SERVO_FREQ,
         LEDC_TIMER_0,
@@ -57,7 +66,7 @@ void motor_control_task(){
         STEERING_DUTY_RESOLUTION
     );
     
-    ledc_channel_config_t DC_PWM_config = PWM_config(
+    ledc_channel_config_t DC_PWM_channel_config = PWM_config(
         DC_PWM_PIN,
         DC_PWM_FREQ,
         LEDC_TIMER_1,
@@ -65,12 +74,19 @@ void motor_control_task(){
         DC_DUTY_RESOLUTION
     );
 
+    //set up drop servo 
+    ledc_channel_config_t drop_servo_PWM_channel_config = PWM_config(
+        DROP_SERVO_PIN,
+        DROP_SERVO_FREQ,
+        LEDC_TIMER_0,
+        LEDC_CHANNEL_2,
+        DROP_DUTY_RESOLUTION
+    );
+
     printf("Start PWM\n");
     int i = 0;
     int servo_angle = 0;
-    int T_on = 0;
-    double duty_cycle = 0;
-    int duty_cycle_int = 0;
+
 
     int throttle = 0;
     double DC_duty_cycle = 0;
@@ -81,42 +97,29 @@ void motor_control_task(){
     int motor_servo_phi_min = -90;
     int motor_servo_phi_max = 90;
 
+    bool drop = 0;
+
     while(1){
 
         // Calculate and output Servo motor PWM
         //calculate the servo angle from triangle wave
-        if(xSemaphoreTake(steeringSemaphore, portMAX_DELAY)){
+        if(xSemaphoreTake(steeringSemaphore, 10 / portTICK_PERIOD_MS)){
             servo_angle = steering_angle_global;
             xSemaphoreGive(steeringSemaphore);
         }
 
-        
+        servo_to_angle( servo_angle,
+                        motor_servo_T_ON_min,
+                        motor_servo_T_ON_max,
+                        motor_servo_phi_min,
+                        motor_servo_phi_max,
+                        STEERING_SERVO_FREQ,
+                        STEERING_DUTY_RESOLUTION,
+                        steering_PWM_channel_config);
+
         //printf("Servo angle: %d\n", servo_angle);
-
-        //calculate the T_on in microseconds
-        T_on = angle_to_us(servo_angle,
-                           motor_servo_T_ON_min,
-                           motor_servo_T_ON_max,
-                           motor_servo_phi_min,
-                           motor_servo_phi_max);
-        // printf("T_on: %d\n", T_on);
-
-        //calculate the duty cycle
-        duty_cycle = duty_cycle_from_T_on_calc(T_on, STEERING_SERVO_FREQ);
-        // printf("Servo duty double: %lf\n", duty_cycle);
-
-        //convert double duty cycle to int duty cycle
-        duty_cycle_int = duty_cycle_int_calc(duty_cycle, STEERING_DUTY_RESOLUTION);
-        // printf("Servo duty int: %d\n", duty_cycle_int);
-
-        //pass to pin
-        set_duty(duty_cycle_int, steering_PWM_config);
-
-
-        // Calculate and output DC motor PWM
-        //calculate throttle from triangle wave
         
-        if(xSemaphoreTake(throttleSemaphore, portMAX_DELAY)){
+        if(xSemaphoreTake(throttleSemaphore, 10 / portTICK_PERIOD_MS)){
             throttle = throttle_global;
             xSemaphoreGive(throttleSemaphore);
         }
@@ -131,7 +134,34 @@ void motor_control_task(){
         // printf("DC_duty_cycle_int: %d\n", DC_duty_cycle_int);
 
         //pass to pin
-        set_duty(DC_duty_cycle_int, DC_PWM_config);
+        set_duty(DC_duty_cycle_int, DC_PWM_channel_config);
+
+
+        //drop servo
+        if(xSemaphoreTake(dropSemaphore, 10 / portTICK_PERIOD_MS)){
+            drop = drop_global;
+            xSemaphoreGive(dropSemaphore);
+        }
+
+        if(drop == 1){
+            servo_to_angle( 90,
+                        motor_servo_T_ON_min,
+                        motor_servo_T_ON_max,
+                        motor_servo_phi_min,
+                        motor_servo_phi_max,
+                        DROP_SERVO_FREQ,
+                        DROP_DUTY_RESOLUTION,
+                        drop_servo_PWM_channel_config);
+        }else{
+             servo_to_angle(-90,
+                        motor_servo_T_ON_min,
+                        motor_servo_T_ON_max,
+                        motor_servo_phi_min,
+                        motor_servo_phi_max,
+                        DROP_SERVO_FREQ,
+                        DROP_DUTY_RESOLUTION,
+                        drop_servo_PWM_channel_config);
+        }
 
         vTaskDelay(100 / portTICK_PERIOD_MS);
         i++;
@@ -215,7 +245,7 @@ esp_err_t steering_handler(httpd_req_t *req)
     }
     printf("steering post: %d\n", atoi(content));
     //protect steering global variable by taking semaphore
-    if(xSemaphoreTake(steeringSemaphore, portMAX_DELAY)){
+    if(xSemaphoreTake(steeringSemaphore, 10 / portTICK_PERIOD_MS)){
         steering_angle_global = atoi(content);
         //release semaphore
         xSemaphoreGive(steeringSemaphore);
@@ -265,7 +295,7 @@ esp_err_t throttle_handler(httpd_req_t *req)
 
     printf("throttle post: %d\n", atoi(content));
     //protect throttle global variable by taking semaphore
-    if(xSemaphoreTake(throttleSemaphore, portMAX_DELAY)){
+    if(xSemaphoreTake(throttleSemaphore, 10 / portTICK_PERIOD_MS)){
         throttle_global = atoi(content);
         //release semaphore
         xSemaphoreGive(throttleSemaphore);
@@ -286,6 +316,60 @@ httpd_uri_t throttle_post = {
     .user_ctx = NULL
 };
 
+/* Our URI handler function to be called during POST /drop request */
+esp_err_t drop_handler(httpd_req_t *req)
+{
+    /* Destination buffer for content of HTTP POST request.
+     * httpd_req_recv() accepts char* only, but content could
+     * as well be any binary data (needs type casting).
+     * In case of string data, null termination will be absent, and
+     * content length would give length of string */
+    char content[req->content_len];
+
+    /* Truncate if content length larger than the buffer */
+    size_t recv_size = min_int(req->content_len, sizeof(content));
+
+    int ret = httpd_req_recv(req, content, recv_size);
+    if (ret <= 0) {  /* 0 return value indicates connection closed */
+        /* Check if timeout occurred */
+        if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+            /* In case of timeout one can choose to retry calling
+             * httpd_req_recv(), but to keep it simple, here we
+             * respond with an HTTP 408 (Request Timeout) error */
+            httpd_resp_send_408(req);
+        }
+        /* In case of error, returning ESP_FAIL will
+         * ensure that the underlying socket is closed */
+        return ESP_FAIL;
+    }
+
+    
+    //protect throttle global variable by taking semaphore
+    if(xSemaphoreTake(dropSemaphore, 10 / portTICK_PERIOD_MS)){
+        //if(strcmp(content, "drop")){
+        
+            drop_global = 1;
+            printf("drop post: %s\n", content);
+        //}
+        //release semaphore
+        xSemaphoreGive(dropSemaphore);
+    }
+
+    /* Send a simple response */
+    //const char resp[] = content;
+    httpd_resp_send(req, content, strlen(content));
+    return ESP_OK;
+}
+
+
+/* URI handler structure for POST /throttle */
+httpd_uri_t drop_post = {
+    .uri      = "/drop",
+    .method   = HTTP_POST,
+    .handler  = drop_handler,
+    .user_ctx = NULL
+};
+
 /* Function for starting the webserver */
 httpd_handle_t start_webserver(void)
 {
@@ -300,6 +384,7 @@ httpd_handle_t start_webserver(void)
         /* Register URI handlers */
         httpd_register_uri_handler(server, &steering_post);
         httpd_register_uri_handler(server, &throttle_post);
+        httpd_register_uri_handler(server, &drop_post);
     }
     /* If server failed to start, handle will be NULL */
     return server;
